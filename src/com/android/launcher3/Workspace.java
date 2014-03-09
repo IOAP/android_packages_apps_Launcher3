@@ -45,6 +45,7 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.IBinder;
 import android.os.Parcelable;
+import android.preference.PreferenceManager;
 import android.support.v4.view.ViewCompat;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -316,7 +317,12 @@ public class Workspace extends SmoothPagedView
                 res.getInteger(R.integer.config_workspaceOverviewShrinkPercentage) / 100.0f;
         mOverviewModePageOffset = res.getDimensionPixelSize(R.dimen.overview_mode_page_offset);
         mCameraDistance = res.getInteger(R.integer.config_cameraDistance);
-        mOriginalDefaultPage = mDefaultPage = a.getInt(R.styleable.Workspace_defaultScreen, 1);
+
+        mOriginalDefaultPage = mDefaultPage =
+                PreferenceManager.getDefaultSharedPreferences(context)
+                        .getInt(LauncherPreferences.KEY_WORKSPACE_DEFAULT_PAGE,
+                                a.getInt(R.styleable.Workspace_defaultScreen, 0));
+
         a.recycle();
 
         setOnHierarchyChangeListener(this);
@@ -1446,12 +1452,6 @@ public class Workspace extends SmoothPagedView
         }
 
         if (Float.compare(progress, mLastCustomContentScrollProgress) == 0) return;
-
-        CellLayout cc = mWorkspaceScreens.get(CUSTOM_CONTENT_SCREEN_ID);
-        if (progress > 0 && cc.getVisibility() != VISIBLE && !isSmall()) {
-            cc.setVisibility(VISIBLE);
-        }
-
         mLastCustomContentScrollProgress = progress;
 
         setBackgroundAlpha(progress * 0.8f);
@@ -3052,9 +3052,7 @@ public class Workspace extends SmoothPagedView
     private void cleanupFolderCreation() {
         if (mDragFolderRingAnimator != null) {
             mDragFolderRingAnimator.animateToNaturalState();
-            mDragFolderRingAnimator = null;
         }
-        mFolderCreationAlarm.setOnAlarmListener(null);
         mFolderCreationAlarm.cancelAlarm();
     }
 
@@ -3398,11 +3396,9 @@ public class Workspace extends SmoothPagedView
         }
 
         public void onAlarm(Alarm alarm) {
-            if (mDragFolderRingAnimator != null) {
-                // This shouldn't happen ever, but just in case, make sure we clean up the mess.
-                mDragFolderRingAnimator.animateToNaturalState();
+            if (mDragFolderRingAnimator == null) {
+                mDragFolderRingAnimator = new FolderRingAnimator(mLauncher, null);
             }
-            mDragFolderRingAnimator = new FolderRingAnimator(mLauncher, null);
             mDragFolderRingAnimator.setCell(cellX, cellY);
             mDragFolderRingAnimator.setCellLayout(layout);
             mDragFolderRingAnimator.animateToAcceptState();
@@ -4075,7 +4071,9 @@ public class Workspace extends SmoothPagedView
         if (mSavedStates != null) {
             mRestoredPages.add(child);
             CellLayout cl = (CellLayout) getChildAt(child);
-            cl.restoreInstanceState(mSavedStates);
+            if (cl != null) {
+                cl.restoreInstanceState(mSavedStates);
+            }
         }
     }
 
@@ -4087,7 +4085,6 @@ public class Workspace extends SmoothPagedView
             }
         }
         mRestoredPages.clear();
-        mSavedStates = null;
     }
 
     @Override

@@ -36,9 +36,6 @@ import java.util.Set;
 import org.json.*;
 
 public class InstallShortcutReceiver extends BroadcastReceiver {
-    private static final String TAG = "InstallShortcutReceiver";
-    private static final boolean DBG = false;
-
     public static final String ACTION_INSTALL_SHORTCUT =
             "com.android.launcher.action.INSTALL_SHORTCUT";
 
@@ -97,11 +94,10 @@ public class InstallShortcutReceiver extends BroadcastReceiver {
                 }
                 json = json.endObject();
                 SharedPreferences.Editor editor = sharedPrefs.edit();
-                if (DBG) Log.d(TAG, "Adding to APPS_PENDING_INSTALL: " + json);
                 addToStringSet(sharedPrefs, editor, APPS_PENDING_INSTALL, json.toString());
                 editor.commit();
             } catch (org.json.JSONException e) {
-                Log.d(TAG, "Exception when adding shortcut: " + e);
+                Log.d("InstallShortcutReceiver", "Exception when adding shortcut: " + e);
             }
         }
     }
@@ -110,15 +106,9 @@ public class InstallShortcutReceiver extends BroadcastReceiver {
                                               ArrayList<String> packageNames) {
         synchronized(sLock) {
             Set<String> strings = sharedPrefs.getStringSet(APPS_PENDING_INSTALL, null);
-            if (DBG) {
-                Log.d(TAG, "APPS_PENDING_INSTALL: " + strings
-                        + ", removing packages: " + packageNames);
-            }
             if (strings != null) {
                 Set<String> newStrings = new HashSet<String>(strings);
-                Iterator<String> newStringsIter = newStrings.iterator();
-                while (newStringsIter.hasNext()) {
-                    String json = newStringsIter.next();
+                for (String json : newStrings) {
                     try {
                         JSONObject object = (JSONObject) new JSONTokener(json).nextValue();
                         Intent launchIntent = Intent.parseUri(object.getString(LAUNCH_INTENT_KEY), 0);
@@ -127,12 +117,12 @@ public class InstallShortcutReceiver extends BroadcastReceiver {
                             pn = launchIntent.getComponent().getPackageName();
                         }
                         if (packageNames.contains(pn)) {
-                            newStringsIter.remove();
+                            newStrings.remove(json);
                         }
                     } catch (org.json.JSONException e) {
-                        Log.d(TAG, "Exception reading shortcut to remove: " + e);
+                        Log.d("InstallShortcutReceiver", "Exception reading shortcut to remove: " + e);
                     } catch (java.net.URISyntaxException e) {
-                        Log.d(TAG, "Exception reading shortcut to remove: " + e);
+                        Log.d("InstallShortcutReceiver", "Exception reading shortcut to remove: " + e);
                     }
                 }
                 sharedPrefs.edit().putStringSet(APPS_PENDING_INSTALL,
@@ -145,7 +135,6 @@ public class InstallShortcutReceiver extends BroadcastReceiver {
             SharedPreferences sharedPrefs) {
         synchronized(sLock) {
             Set<String> strings = sharedPrefs.getStringSet(APPS_PENDING_INSTALL, null);
-            if (DBG) Log.d(TAG, "Getting and clearing APPS_PENDING_INSTALL: " + strings);
             if (strings == null) {
                 return new ArrayList<PendingInstallShortcutInfo>();
             }
@@ -178,9 +167,11 @@ public class InstallShortcutReceiver extends BroadcastReceiver {
                         new PendingInstallShortcutInfo(data, name, launchIntent);
                     infos.add(info);
                 } catch (org.json.JSONException e) {
-                    Log.d(TAG, "Exception reading shortcut to add: " + e);
+                    Log.d("InstallShortcutReceiver",
+                            "Exception reading shortcut to add: " + e);
                 } catch (java.net.URISyntaxException e) {
-                    Log.d(TAG, "Exception reading shortcut to add: " + e);
+                    Log.d("InstallShortcutReceiver",
+                            "Exception reading shortcut to add: " + e);
                 }
             }
             sharedPrefs.edit().putStringSet(APPS_PENDING_INSTALL, new HashSet<String>()).commit();
@@ -211,8 +202,6 @@ public class InstallShortcutReceiver extends BroadcastReceiver {
         if (!ACTION_INSTALL_SHORTCUT.equals(data.getAction())) {
             return;
         }
-
-        if (DBG) Log.d(TAG, "Got INSTALL_SHORTCUT: " + data.toUri(0));
 
         Intent intent = data.getParcelableExtra(Intent.EXTRA_SHORTCUT_INTENT);
         if (intent == null) {

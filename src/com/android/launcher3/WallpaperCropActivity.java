@@ -87,14 +87,8 @@ public class WallpaperCropActivity extends Activity {
 
         mCropView = (CropView) findViewById(R.id.cropView);
 
-        Intent cropIntent = getIntent();
+        Intent cropIntent = this.getIntent();
         final Uri imageUri = cropIntent.getData();
-
-        if (imageUri == null) {
-            Log.e(LOGTAG, "No URI passed in intent, exiting WallpaperCropActivity");
-            finish();
-            return;
-        }
 
         int rotation = getRotationFromExif(this, imageUri);
         mCropView.setTileSource(new BitmapRegionTileSource(this, imageUri, 1024, rotation), null);
