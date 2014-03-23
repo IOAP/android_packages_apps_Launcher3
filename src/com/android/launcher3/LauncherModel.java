@@ -169,7 +169,6 @@ public class LauncherModel extends BroadcastReceiver {
                         boolean matchPackageNamesOnly);
         public void bindPackagesUpdated(ArrayList<Object> widgetsAndShortcuts);
         public void bindSearchablesChanged();
-        public boolean isAllAppsButtonRank(int rank);
         public void onPageBoundSynchronously(int page);
         public void dumpLogsToLocalData();
     }
@@ -586,6 +585,7 @@ public class LauncherModel extends BroadcastReceiver {
                     case LauncherSettings.Favorites.ITEM_TYPE_APPLICATION:
                     case LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT:
                     case LauncherSettings.Favorites.ITEM_TYPE_FOLDER:
+                    case LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS:
                         if (!sBgWorkspaceItems.contains(modelItem)) {
                             sBgWorkspaceItems.add(modelItem);
                         }
@@ -874,6 +874,7 @@ public class LauncherModel extends BroadcastReceiver {
                             // Fall through
                         case LauncherSettings.Favorites.ITEM_TYPE_APPLICATION:
                         case LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT:
+                        case LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS:
                             if (item.container == LauncherSettings.Favorites.CONTAINER_DESKTOP ||
                                     item.container == LauncherSettings.Favorites.CONTAINER_HOTSEAT) {
                                 sBgWorkspaceItems.add(item);
@@ -894,6 +895,56 @@ public class LauncherModel extends BroadcastReceiver {
             }
         };
         runOnWorkerThread(r);
+    }
+
+    /**
+     * Checks whether there is an all apps shortcut in the database
+     */
+    static boolean hasAllAppsShortcut() {
+        for (ItemInfo info : sBgWorkspaceItems) {
+            if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether there is more than 1 all apps shortcut in the database
+     */
+    static boolean hasMultipleAllAppsShortcuts() {
+        boolean foundOne = false;
+        for (ItemInfo info : sBgWorkspaceItems) {
+            if (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
+                if (!foundOne) {
+                    foundOne = true;
+                } else {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Add an all apps shortcut to the database if there aren't any already
+     */
+    private ItemInfo addAllAppsShortcutIfNecessary() {
+        if (hasAllAppsShortcut()) return null;
+
+        DeviceProfile grid = mApp.getDynamicGrid().getDeviceProfile();
+        int allAppsIndex = grid.hotseatAllAppsRank;
+
+        ShortcutInfo allAppsShortcut = new ShortcutInfo();
+        allAppsShortcut.itemType = LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS;
+        allAppsShortcut.title = mApp.getContext().getResources().getString(R.string.all_apps_button_label);
+        allAppsShortcut.container = ItemInfo.NO_ID;
+        allAppsShortcut.spanX = 1;
+        allAppsShortcut.spanY = 1;
+        LauncherModel.addOrMoveItemInDatabase(mApp.getContext(), allAppsShortcut, LauncherSettings.Favorites.CONTAINER_HOTSEAT,
+                allAppsIndex, allAppsIndex, 0);
+
+        return allAppsShortcut;
     }
 
     /**
@@ -936,6 +987,7 @@ public class LauncherModel extends BroadcastReceiver {
                             break;
                         case LauncherSettings.Favorites.ITEM_TYPE_APPLICATION:
                         case LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT:
+                        case LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS:
                             sBgWorkspaceItems.remove(item);
                             break;
                         case LauncherSettings.Favorites.ITEM_TYPE_APPWIDGET:
@@ -1112,7 +1164,7 @@ public class LauncherModel extends BroadcastReceiver {
         }
     }
 
-    private void forceReload() {
+    void forceReload() {
         resetLoadedState(true, true);
 
         // Do this here because if the launcher activity is running it will be restarted.
@@ -1256,18 +1308,9 @@ public class LauncherModel extends BroadcastReceiver {
                                        AtomicBoolean deleteOnItemOverlap) {
         LauncherAppState app = LauncherAppState.getInstance();
         DeviceProfile grid = app.getDynamicGrid().getDeviceProfile();
-        int countX = (int) grid.numColumns;
-        int countY = (int) grid.numRows;
 
         long containerIndex = item.screenId;
         if (item.container == LauncherSettings.Favorites.CONTAINER_HOTSEAT) {
-            // Return early if we detect that an item is under the hotseat button
-            if (mCallbacks == null ||
-                    mCallbacks.get().isAllAppsButtonRank((int) item.screenId)) {
-                deleteOnItemOverlap.set(true);
-                return false;
-            }
-
             if (occupied.containsKey((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT)) {
                 if (occupied.get((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT)
                         [(int) item.screenId][0] != null) {
@@ -1276,7 +1319,11 @@ public class LauncherModel extends BroadcastReceiver {
                             + item.cellY + ") occupied by "
                             + occupied.get((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT)
                             [(int) item.screenId][0]);
-                        return false;
+                    if (occupied.get((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT)
+                            [(int) item.screenId][0].itemType == LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
+                        deleteOnItemOverlap.set(true);
+                    }
+                    return false;
                 } else {
                     ItemInfo[][] hotseatItems = occupied.get(
                             (long) LauncherSettings.Favorites.CONTAINER_HOTSEAT);
@@ -1284,7 +1331,7 @@ public class LauncherModel extends BroadcastReceiver {
                     return true;
                 }
             } else {
-                ItemInfo[][] items = new ItemInfo[countX + 1][countY + 1];
+                ItemInfo[][] items = new ItemInfo[(int) grid.numHotseatIcons][1];
                 items[(int) item.screenId][0] = item;
                 occupied.put((long) LauncherSettings.Favorites.CONTAINER_HOTSEAT, items);
                 return true;
@@ -1293,6 +1340,9 @@ public class LauncherModel extends BroadcastReceiver {
             // Skip further checking if it is not the hotseat or workspace container
             return true;
         }
+
+        int countX = (int) grid.numColumns;
+        int countY = (int) grid.numRows;
 
         if (!occupied.containsKey(item.screenId)) {
             ItemInfo[][] items = new ItemInfo[countX + 1][countY + 1];
@@ -1676,7 +1726,7 @@ public class LauncherModel extends BroadcastReceiver {
                     LauncherAppWidgetInfo appWidgetInfo;
                     int container;
                     long id;
-                    Intent intent;
+                    Intent intent = null;
 
                     while (!mStopped && c.moveToNext()) {
                         AtomicBoolean deleteOnItemOverlap = new AtomicBoolean(false);
@@ -1686,32 +1736,38 @@ public class LauncherModel extends BroadcastReceiver {
                             switch (itemType) {
                             case LauncherSettings.Favorites.ITEM_TYPE_APPLICATION:
                             case LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT:
+                            case LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS:
                                 id = c.getLong(idIndex);
                                 intentDescription = c.getString(intentIndex);
-                                try {
-                                    intent = Intent.parseUri(intentDescription, 0);
-                                    ComponentName cn = intent.getComponent();
-                                    if (cn != null && !isValidPackageComponent(manager, cn)) {
-                                        if (!mAppsCanBeOnRemoveableStorage) {
-                                            // Log the invalid package, and remove it from the db
-                                            Launcher.addDumpLog(TAG, "Invalid package removed: " + cn, true);
-                                            itemsToRemove.add(id);
-                                        } else {
-                                            // If apps can be on external storage, then we just
-                                            // leave them for the user to remove (maybe add
-                                            // visual treatment to it)
-                                            Launcher.addDumpLog(TAG, "Invalid package found: " + cn, true);
+                                if (itemType != LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
+                                    try {
+                                        intent = Intent.parseUri(intentDescription, 0);
+                                        ComponentName cn = intent.getComponent();
+                                        if (cn != null && !isValidPackageComponent(manager, cn)) {
+                                            if (!mAppsCanBeOnRemoveableStorage) {
+                                                // Log the invalid package, and remove it from the db
+                                                Launcher.addDumpLog(TAG, "Invalid package removed: " + cn, true);
+                                                itemsToRemove.add(id);
+                                            } else {
+                                                // If apps can be on external storage, then we just
+                                                // leave them for the user to remove (maybe add
+                                                // visual treatment to it)
+                                                Launcher.addDumpLog(TAG, "Invalid package found: " + cn, true);
+                                            }
+                                            continue;
                                         }
+                                    } catch (URISyntaxException e) {
+                                        Launcher.addDumpLog(TAG, "Invalid uri: " + intentDescription, true);
                                         continue;
                                     }
-                                } catch (URISyntaxException e) {
-                                    Launcher.addDumpLog(TAG, "Invalid uri: " + intentDescription, true);
-                                    continue;
                                 }
 
                                 if (itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION) {
                                     info = getShortcutInfo(manager, intent, context, c, iconIndex,
                                             titleIndex, mLabelCache);
+                                } else if (itemType == LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
+                                    info = getShortcutInfo(c, context,
+                                            titleIndex);
                                 } else {
                                     info = getShortcutInfo(c, context, iconTypeIndex,
                                             iconPackageIndex, iconResourceIndex, iconIndex,
@@ -1904,6 +1960,19 @@ public class LauncherModel extends BroadcastReceiver {
                 if (mStopped) {
                     clearSBgDataStructures();
                     return false;
+                }
+
+                // Add an all apps button to the database if there isn't one already
+                ItemInfo allAppsButton = addAllAppsShortcutIfNecessary();
+                if (allAppsButton != null) {
+                    // Check if there was an icon occupying the default position and remove
+                    if (occupied.containsKey(allAppsButton.container)) {
+                        if (occupied.get(allAppsButton.container)
+                                [(int) allAppsButton.screenId][0] != null) {
+                            itemsToRemove.add(occupied.get(allAppsButton.container)
+                                    [(int) allAppsButton.screenId][0].id);
+                        }
+                    }
                 }
 
                 if (itemsToRemove.size() > 0) {
@@ -2757,7 +2826,8 @@ public class LauncherModel extends BroadcastReceiver {
             ItemInfoFilter f) {
         HashSet<ItemInfo> filtered = new HashSet<ItemInfo>();
         for (ItemInfo i : infos) {
-            if (i instanceof ShortcutInfo) {
+            if (i instanceof ShortcutInfo &&
+                    (i.itemType != LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS)) {
                 ShortcutInfo info = (ShortcutInfo) i;
                 ComponentName cn = info.intent.getComponent();
                 if (cn != null && f.filterItem(null, info, cn)) {
@@ -2803,7 +2873,8 @@ public class LauncherModel extends BroadcastReceiver {
     }
 
     public static boolean isShortcutInfoUpdateable(ItemInfo i) {
-        if (i instanceof ShortcutInfo) {
+        if (i instanceof ShortcutInfo &&
+                i.itemType != LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
             ShortcutInfo info = (ShortcutInfo) i;
             // We need to check for ACTION_MAIN otherwise getComponent() might
             // return null for some shortcuts (for instance, for shortcuts to
@@ -2816,6 +2887,18 @@ public class LauncherModel extends BroadcastReceiver {
             }
         }
         return false;
+    }
+
+    /**
+     * Make an ShortcutInfo object for a shortcut that isn't an application.
+     */
+    private ShortcutInfo getShortcutInfo(Cursor c, Context context,
+                                         int titleIndex) {
+        final ShortcutInfo info = new ShortcutInfo();
+        info.itemType = LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS;
+
+        info.title = c.getString(titleIndex);
+        return info;
     }
 
     /**
@@ -3083,14 +3166,37 @@ public class LauncherModel extends BroadcastReceiver {
             }
         };
     }
-    public static final Comparator<AppInfo> APP_INSTALL_TIME_COMPARATOR
-            = new Comparator<AppInfo>() {
-        public final int compare(AppInfo a, AppInfo b) {
-            if (a.firstInstallTime < b.firstInstallTime) return 1;
-            if (a.firstInstallTime > b.firstInstallTime) return -1;
-            return 0;
-        }
-    };
+    public static final Comparator<AppInfo> getAppLaunchCountComparator(final Stats stats) {
+        final Collator collator = Collator.getInstance();
+        return new Comparator<AppInfo>() {
+            public final int compare(AppInfo a, AppInfo b) {
+                int result = stats.launchCount(b.intent) - stats.launchCount(a.intent);
+                if (result == 0) {
+                    result = collator.compare(a.title.toString().trim(),
+                            b.title.toString().trim());
+                    if (result == 0) {
+                        result = a.componentName.compareTo(b.componentName);
+                    }
+                }
+                return result;
+            }
+        };
+    }
+    public static final Comparator<AppInfo> getAppInstallTimeComparator() {
+        final Collator collator = Collator.getInstance();
+        return new Comparator<AppInfo>() {
+            public final int compare(AppInfo a, AppInfo b) {
+                if (a.firstInstallTime < b.firstInstallTime) return 1;
+                if (a.firstInstallTime > b.firstInstallTime) return -1;
+                int result = collator.compare(a.title.toString().trim(),
+                        b.title.toString().trim());
+                if (result == 0) {
+                    result = a.componentName.compareTo(b.componentName);
+                }
+                return result;
+            }
+        };
+    }
     public static final Comparator<AppWidgetProviderInfo> getWidgetNameComparator() {
         final Collator collator = Collator.getInstance();
         return new Comparator<AppWidgetProviderInfo>() {

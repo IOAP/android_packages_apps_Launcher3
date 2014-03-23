@@ -17,19 +17,14 @@
 package com.android.launcher3;
 
 import android.app.SearchManager;
-import android.content.ComponentName;
-import android.content.ContentResolver;
-import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.content.SharedPreferences;
-import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
+import android.content.*;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.os.Handler;
-import android.preference.PreferenceManager;
+import android.provider.Settings;
 import android.util.Log;
+import com.android.launcher3.settings.SettingsProvider;
 
 import java.lang.ref.WeakReference;
 
@@ -119,8 +114,17 @@ public class LauncherAppState {
         resolver.registerContentObserver(LauncherSettings.Favorites.CONTENT_URI, true,
                 mFavoritesObserver);
 
-        PreferenceManager.getDefaultSharedPreferences(sContext)
-                .registerOnSharedPreferenceChangeListener(mSharedPreferencesObserver);
+        // Generate default typeface
+        String fontFamily = SettingsProvider.getString(sContext,
+                SettingsProvider.SETTINGS_UI_GENERAL_ICONS_TEXT_FONT_FAMILY,
+                R.string.preferences_interface_general_icons_text_font_family_default);
+
+        // TODO: Implement font styles
+        int fontStyle = SettingsProvider.getInt(sContext,
+                SettingsProvider.SETTINGS_UI_GENERAL_ICONS_TEXT_FONT_STYLE,
+                R.integer.preferences_interface_general_icons_text_font_style_default);
+
+        Utilities.generateTypeface(fontFamily, fontStyle);
     }
 
     /**
@@ -128,8 +132,6 @@ public class LauncherAppState {
      */
     public void onTerminate() {
         sContext.unregisterReceiver(mModel);
-        PreferenceManager.getDefaultSharedPreferences(sContext)
-                .unregisterOnSharedPreferenceChangeListener(mSharedPreferencesObserver);
 
         ContentResolver resolver = sContext.getContentResolver();
         resolver.unregisterContentObserver(mFavoritesObserver);
@@ -145,20 +147,6 @@ public class LauncherAppState {
             // workspace on the next load
             mModel.resetLoadedState(false, true);
             mModel.startLoaderFromBackground();
-        }
-    };
-
-    private final OnSharedPreferenceChangeListener mSharedPreferencesObserver = new OnSharedPreferenceChangeListener() {
-
-        @Override
-        public void onSharedPreferenceChanged(SharedPreferences sharedPreferences,
-                String key) {
-
-            if (LauncherPreferences.isLauncherPreference(key)) {
-                Log.i(TAG, "Preference " + key + " changed - updating DynamicGrid.");
-                mDynamicGrid.getDeviceProfile().updateFromPreferences(
-                        PreferenceManager.getDefaultSharedPreferences(sContext));
-            }
         }
     };
 
@@ -213,8 +201,6 @@ public class LauncherAppState {
         Utilities.setIconSize(grid.iconSizePx);
         grid.updateFromConfiguration(context.getResources(), width, height,
                 availableWidth, availableHeight);
-
-        grid.updateFromPreferences(PreferenceManager.getDefaultSharedPreferences(context));
         return grid;
     }
     DynamicGrid getDynamicGrid() {

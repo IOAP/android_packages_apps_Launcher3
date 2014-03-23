@@ -34,30 +34,16 @@ LOCAL_PROTOC_FLAGS := --proto_path=$(LOCAL_PATH)/protos/
 
 LOCAL_SDK_VERSION := 19
 
+LOCAL_PACKAGE_NAME := CustomLauncher3
 LOCAL_PRIVILEGED_MODULE := true
-LOCAL_PACKAGE_NAME := Launcher3
-#LOCAL_CERTIFICATE := shared
+LOCAL_CERTIFICATE := platform
 
-LOCAL_OVERRIDES_PACKAGES := Launcher2
+LOCAL_AAPT_FLAGS := --rename-manifest-package org.nameless.customlauncher3
+
+LOCAL_OVERRIDES_PACKAGES := Launcher3
 
 LOCAL_PROGUARD_FLAG_FILES := proguard.flags
 
 include $(BUILD_PACKAGE)
 
 include $(call all-makefiles-under,$(LOCAL_PATH))
-
-#
-# Protocol Buffer Debug Utility in Java
-#
-include $(CLEAR_VARS)
-
-LOCAL_SRC_FILES := $(call all-java-files-under, util) \
-    $(call all-proto-files-under, protos)
-
-LOCAL_PROTOC_OPTIMIZE_TYPE := nano
-LOCAL_PROTOC_FLAGS := --proto_path=$(LOCAL_PATH)/protos/
-
-LOCAL_MODULE_TAGS := optional
-LOCAL_MODULE := protoutil
-
-include $(BUILD_HOST_JAVA_LIBRARY)

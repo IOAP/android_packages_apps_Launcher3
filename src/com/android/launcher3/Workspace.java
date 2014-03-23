@@ -45,7 +45,6 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.IBinder;
 import android.os.Parcelable;
-import android.preference.PreferenceManager;
 import android.support.v4.view.ViewCompat;
 import android.util.AttributeSet;
 import android.util.Log;
@@ -66,6 +65,7 @@ import android.widget.TextView;
 import com.android.launcher3.FolderIcon.FolderRingAnimator;
 import com.android.launcher3.Launcher.CustomContentCallbacks;
 import com.android.launcher3.LauncherSettings.Favorites;
+import com.android.launcher3.settings.SettingsProvider;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -116,14 +116,15 @@ public class Workspace extends SmoothPagedView
     private final WallpaperManager mWallpaperManager;
     private IBinder mWindowToken;
 
-    private int mOriginalDefaultPage;
     private int mDefaultPage;
+    private long mDefaultScreenId;
 
     private ShortcutAndWidgetContainer mDragSourceInternal;
     private static boolean sAccessibilityEnabled;
 
-    // The screen id used for the empty screen always present to the right.
-    private final static long EXTRA_EMPTY_SCREEN_ID = -201;
+    // The screen ids used for the empty screens always present to the left/right.
+    private final static long EXTRA_EMPTY_SCREEN_LEFT_ID = -201;
+    private final static long EXTRA_EMPTY_SCREEN_RIGHT_ID = -202;
     private final static long CUSTOM_CONTENT_SCREEN_ID = -301;
 
     private HashMap<Long, CellLayout> mWorkspaceScreens = new HashMap<Long, CellLayout>();
@@ -208,8 +209,9 @@ public class Workspace extends SmoothPagedView
     private boolean mWorkspaceFadeInAdjacentScreens;
 
     WallpaperOffsetInterpolator mWallpaperOffset;
+    private boolean mScrollWallpaper;
     private Runnable mDelayedResizeRunnable;
-    private Runnable mDelayedSnapToPageRunnable;
+
     private Point mDisplaySize = new Point();
     private int mCameraDistance;
 
@@ -259,8 +261,10 @@ public class Workspace extends SmoothPagedView
     private float mCurrentScale;
     private float mNewScale;
     private float[] mOldBackgroundAlphas;
+    private float[] mOldBackgroundAlphaMultipliers;
     private float[] mOldAlphas;
     private float[] mNewBackgroundAlphas;
+    private float[] mNewBackgroundAlphaMultipliers;
     private float[] mNewAlphas;
     private int mLastChildCount = -1;
     private float mTransitionProgress;
@@ -275,6 +279,9 @@ public class Workspace extends SmoothPagedView
             mLauncher.getModel().bindRemainingSynchronousPages();
         }
     };
+
+    private boolean mShowSearchBar;
+    private boolean mShowOutlines;
 
     /**
      * Used to inflate the Workspace from XML.
@@ -303,9 +310,20 @@ public class Workspace extends SmoothPagedView
         // With workspace, data is available straight from the get-go
         setDataIsReady();
 
+        mShowSearchBar = SettingsProvider.getBoolean(context, SettingsProvider.SETTINGS_UI_HOMESCREEN_SEARCH,
+                R.bool.preferences_interface_homescreen_search_default);
+        mShowOutlines = SettingsProvider.getBoolean(context,
+                SettingsProvider.SETTINGS_UI_HOMESCREEN_SCROLLING_PAGE_OUTLINES,
+                R.bool.preferences_interface_homescreen_scrolling_page_outlines_default);
+        mWorkspaceFadeInAdjacentScreens = SettingsProvider.getBoolean(context,
+                SettingsProvider.SETTINGS_UI_HOMESCREEN_SCROLLING_FADE_ADJACENT,
+                R.bool.preferences_interface_homescreen_scrolling_fade_adjacent_default);
+        TransitionEffect.setFromString(this, SettingsProvider.getString(context,
+                SettingsProvider.SETTINGS_UI_HOMESCREEN_SCROLLING_TRANSITION_EFFECT,
+                R.string.preferences_interface_homescreen_scrolling_transition_effect));
+
         mLauncher = (Launcher) context;
         final Resources res = getResources();
-        mWorkspaceFadeInAdjacentScreens = res.getBoolean(R.bool.config_workspaceFadeAdjacentScreens);
         mFadeInAdjacentScreens = false;
         mWallpaperManager = WallpaperManager.getInstance(context);
 
@@ -317,12 +335,9 @@ public class Workspace extends SmoothPagedView
                 res.getInteger(R.integer.config_workspaceOverviewShrinkPercentage) / 100.0f;
         mOverviewModePageOffset = res.getDimensionPixelSize(R.dimen.overview_mode_page_offset);
         mCameraDistance = res.getInteger(R.integer.config_cameraDistance);
-
-        mOriginalDefaultPage = mDefaultPage =
-                PreferenceManager.getDefaultSharedPreferences(context)
-                        .getInt(LauncherPreferences.KEY_WORKSPACE_DEFAULT_PAGE,
-                                a.getInt(R.styleable.Workspace_defaultScreen, 0));
-
+        mDefaultPage = a.getInt(R.styleable.Workspace_defaultScreen, 1);
+        mDefaultScreenId = SettingsProvider.getLongCustomDefault(context,
+                SettingsProvider.SETTINGS_UI_HOMESCREEN_DEFAULT_SCREEN_ID, -1);
         a.recycle();
 
         setOnHierarchyChangeListener(this);
@@ -383,7 +398,7 @@ public class Workspace extends SmoothPagedView
             @Override
             public void run() {
                 if (mIsDragOccuring) {
-                    addExtraEmptyScreenOnDrag();
+                    addExtraEmptyScreensOnDrag();
                 }
             }
         });
@@ -398,7 +413,11 @@ public class Workspace extends SmoothPagedView
         InstallShortcutReceiver.disableAndFlushInstallQueue(getContext());
         UninstallShortcutReceiver.disableAndFlushUninstallQueue(getContext());
 
-        removeExtraEmptyScreen();
+        // Disable all layout transitions before removing left extra pages to ensure that we don't get
+        // the transition animations competing with us changing the scroll when we remove it
+        disableLayoutTransitions();
+        removeExtraEmptyScreens();
+        enableLayoutTransitions();
         mDragSourceInternal = null;
         mLauncher.onInteractionEnd();
     }
@@ -458,6 +477,11 @@ public class Workspace extends SmoothPagedView
     @Override
     protected int getScrollMode() {
         return SmoothPagedView.X_LARGE_MODE;
+    }
+
+    @Override
+    public void setChildAlpha(View child, float alpha) {
+        ((CellLayout) child).setShortcutAndWidgetAlpha(alpha);
     }
 
     @Override
@@ -525,7 +549,7 @@ public class Workspace extends SmoothPagedView
     public long insertNewWorkspaceScreenBeforeEmptyScreen(long screenId) {
         // Find the index to insert this view into.  If the empty screen exists, then
         // insert it before that.
-        int insertIndex = mScreenOrder.indexOf(EXTRA_EMPTY_SCREEN_ID);
+        int insertIndex = mScreenOrder.indexOf(EXTRA_EMPTY_SCREEN_RIGHT_ID);
         if (insertIndex < 0) {
             insertIndex = mScreenOrder.size();
         }
@@ -550,6 +574,13 @@ public class Workspace extends SmoothPagedView
         mWorkspaceScreens.put(screenId, newScreen);
         mScreenOrder.add(insertIndex, screenId);
         addView(newScreen, insertIndex);
+
+        if (mDefaultScreenId == screenId) {
+            int defaultPage = getPageIndexForScreenId(screenId);
+            moveToScreen(defaultPage, false);
+            Launcher.setScreen(defaultPage);
+        }
+
         return screenId;
     }
 
@@ -564,9 +595,6 @@ public class Workspace extends SmoothPagedView
         customScreen.setPadding(0, 0, 0, 0);
 
         addFullScreenPage(customScreen);
-
-        // Ensure that the current page and default page are maintained.
-        mDefaultPage = mOriginalDefaultPage + 1;
 
         // Update the custom content hint
         mLauncher.updateCustomContentHintVisibility();
@@ -593,9 +621,6 @@ public class Workspace extends SmoothPagedView
         }
 
         mCustomContentCallbacks = null;
-
-        // Ensure that the current page and default page are maintained.
-        mDefaultPage = mOriginalDefaultPage - 1;
 
         // Update the custom content hint
         mLauncher.updateCustomContentHintVisibility();
@@ -629,61 +654,89 @@ public class Workspace extends SmoothPagedView
         mCustomContentCallbacks = callbacks;
     }
 
-    public void addExtraEmptyScreenOnDrag() {
-        boolean lastChildOnScreen = false;
-        boolean childOnFinalScreen = false;
+    public void addExtraEmptyScreensOnDrag() {
+        boolean addLeftScreen = true;
+        boolean addRightScreen = true;
 
         if (mDragSourceInternal != null) {
             if (mDragSourceInternal.getChildCount() == 1) {
-                lastChildOnScreen = true;
-            }
-            CellLayout cl = (CellLayout) mDragSourceInternal.getParent();
-            if (indexOfChild(cl) == getChildCount() - 1) {
-                childOnFinalScreen = true;
+                CellLayout cl = (CellLayout) mDragSourceInternal.getParent();
+                addLeftScreen = indexOfChild(cl) != 0;
+                addRightScreen = indexOfChild(cl) != getChildCount() - 1;
             }
         }
 
-        // If this is the last item on the final screen
-        if (lastChildOnScreen && childOnFinalScreen) {
-            return;
+        if (addLeftScreen && !mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_LEFT_ID)) {
+            insertNewWorkspaceScreen(EXTRA_EMPTY_SCREEN_LEFT_ID, 0);
+            setCurrentPage(getCurrentPage() + 1);
         }
-        if (!mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_ID)) {
-            insertNewWorkspaceScreen(EXTRA_EMPTY_SCREEN_ID);
+        if (addRightScreen && !mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_RIGHT_ID)) {
+            insertNewWorkspaceScreen(EXTRA_EMPTY_SCREEN_RIGHT_ID);
         }
     }
 
     public boolean addExtraEmptyScreen() {
-        if (!mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_ID)) {
-            insertNewWorkspaceScreen(EXTRA_EMPTY_SCREEN_ID);
+        if (!mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_RIGHT_ID)) {
+            insertNewWorkspaceScreen(EXTRA_EMPTY_SCREEN_RIGHT_ID);
             return true;
         }
         return false;
     }
 
-    public void removeExtraEmptyScreen() {
-        if (hasExtraEmptyScreen()) {
-            CellLayout cl = mWorkspaceScreens.get(EXTRA_EMPTY_SCREEN_ID);
-            mWorkspaceScreens.remove(EXTRA_EMPTY_SCREEN_ID);
-            mScreenOrder.remove(EXTRA_EMPTY_SCREEN_ID);
+    public void removeExtraEmptyScreenLeft() {
+        if (hasExtraEmptyScreenLeft()) {
+            CellLayout cl = mWorkspaceScreens.get(EXTRA_EMPTY_SCREEN_LEFT_ID);
+            mWorkspaceScreens.remove(EXTRA_EMPTY_SCREEN_LEFT_ID);
+            mScreenOrder.remove(EXTRA_EMPTY_SCREEN_LEFT_ID);
+            setCurrentPage(mCurrentPage - 1);
             removeView(cl);
         }
     }
 
-    public boolean hasExtraEmptyScreen() {
-        int nScreens = getChildCount();
-        nScreens = nScreens - numCustomPages();
-        return mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_ID) && nScreens > 1;
+    public void removeExtraEmptyScreenRight() {
+        if (hasExtraEmptyScreenRight()) {
+            CellLayout cl = mWorkspaceScreens.get(EXTRA_EMPTY_SCREEN_RIGHT_ID);
+            mWorkspaceScreens.remove(EXTRA_EMPTY_SCREEN_RIGHT_ID);
+            mScreenOrder.remove(EXTRA_EMPTY_SCREEN_RIGHT_ID);
+            removeView(cl);
+        }
     }
 
-    public long commitExtraEmptyScreen() {
-        int index = getPageIndexForScreenId(EXTRA_EMPTY_SCREEN_ID);
-        CellLayout cl = mWorkspaceScreens.get(EXTRA_EMPTY_SCREEN_ID);
-        mWorkspaceScreens.remove(EXTRA_EMPTY_SCREEN_ID);
-        mScreenOrder.remove(EXTRA_EMPTY_SCREEN_ID);
+    public void removeExtraEmptyScreens() {
+        removeExtraEmptyScreenLeft();
+        removeExtraEmptyScreenRight();
+    }
+
+    public boolean hasExtraEmptyScreenLeft() {
+        return mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_LEFT_ID) && getChildCount() - numCustomPages() > 1;
+    }
+
+    public boolean hasExtraEmptyScreenRight() {
+        return mWorkspaceScreens.containsKey(EXTRA_EMPTY_SCREEN_RIGHT_ID) && getChildCount() - numCustomPages() > 1;
+    }
+
+    public boolean hasExtraEmptyScreens() {
+        return hasExtraEmptyScreenLeft() || hasExtraEmptyScreenRight();
+    }
+
+    public int numExtraEmptyScreens() {
+        return (hasExtraEmptyScreenLeft() ? 1 : 0) + (hasExtraEmptyScreenRight() ? 1 : 0);
+    }
+
+    public long commitExtraEmptyScreen(long screenId) {
+        int index = getPageIndexForScreenId(screenId);
+        CellLayout cl = mWorkspaceScreens.get(screenId);
+        mWorkspaceScreens.remove(screenId);
+        mScreenOrder.remove(screenId);
 
         long newId = LauncherAppState.getLauncherProvider().generateNewScreenId();
         mWorkspaceScreens.put(newId, cl);
-        mScreenOrder.add(newId);
+
+        if (screenId == EXTRA_EMPTY_SCREEN_LEFT_ID) {
+            mScreenOrder.add(numCustomPages(), newId);
+        } else {
+            mScreenOrder.add(newId);
+        }
 
         // Update the page indicator marker
         if (getPageIndicator() != null) {
@@ -759,8 +812,8 @@ public class Workspace extends SmoothPagedView
                 removeView(cl);
             } else {
                 // if this is the last non-custom content screen, convert it to the empty screen
-                mWorkspaceScreens.put(EXTRA_EMPTY_SCREEN_ID, cl);
-                mScreenOrder.add(EXTRA_EMPTY_SCREEN_ID);
+                mWorkspaceScreens.put(EXTRA_EMPTY_SCREEN_RIGHT_ID, cl);
+                mScreenOrder.add(EXTRA_EMPTY_SCREEN_RIGHT_ID);
             }
         }
 
@@ -818,7 +871,7 @@ public class Workspace extends SmoothPagedView
                 return;
             }
         }
-        if (screenId == EXTRA_EMPTY_SCREEN_ID) {
+        if (screenId == EXTRA_EMPTY_SCREEN_LEFT_ID || screenId == EXTRA_EMPTY_SCREEN_RIGHT_ID) {
             // This should never happen
             throw new RuntimeException("Screen id should not be EXTRA_EMPTY_SCREEN_ID");
         }
@@ -875,7 +928,9 @@ public class Workspace extends SmoothPagedView
         }
 
         if (!(child instanceof Folder)) {
-            child.setHapticFeedbackEnabled(false);
+            if (container != LauncherSettings.Favorites.CONTAINER_HOTSEAT) {
+                child.setHapticFeedbackEnabled(false);
+            }
             child.setOnLongClickListener(mLongClickListener);
         }
         if (child instanceof DropTarget) {
@@ -1021,10 +1076,7 @@ public class Workspace extends SmoothPagedView
             }
         }
 
-        // Only show page outlines as we pan if we are on large screen
-        if (LauncherAppState.getInstance().isScreenLarge()) {
-            showOutlines();
-        }
+        if (mShowOutlines) showOutlines();
 
         // If we are not fading in adjacent screens, we still need to restore the alpha in case the
         // user scrolls while we are transitioning (should not affect dispatchDraw optimizations)
@@ -1051,10 +1103,8 @@ public class Workspace extends SmoothPagedView
                 mDragController.forceTouchMove();
             }
         } else {
-            // If we are not mid-dragging, hide the page outlines if we are on a large screen
-            if (LauncherAppState.getInstance().isScreenLarge()) {
-                hideOutlines();
-            }
+            // If we are not mid-dragging, hide the page outlines
+            if (mShowOutlines) hideOutlines();
         }
 
         if (mDelayedResizeRunnable != null) {
@@ -1062,10 +1112,6 @@ public class Workspace extends SmoothPagedView
             mDelayedResizeRunnable = null;
         }
 
-        if (mDelayedSnapToPageRunnable != null) {
-            mDelayedSnapToPageRunnable.run();
-            mDelayedSnapToPageRunnable = null;
-        }
         if (mStripScreensOnPageStopMoving) {
             stripEmptyScreens();
             mStripScreensOnPageStopMoving = false;
@@ -1106,14 +1152,6 @@ public class Workspace extends SmoothPagedView
         SharedPreferences sp = mLauncher.getSharedPreferences(spKey, Context.MODE_PRIVATE);
         WallpaperPickerActivity.suggestWallpaperDimension(mLauncher.getResources(),
                 sp, mLauncher.getWindowManager(), mWallpaperManager);
-    }
-
-    protected void snapToPage(int whichPage, Runnable r) {
-        if (mDelayedSnapToPageRunnable != null) {
-            mDelayedSnapToPageRunnable.run();
-        }
-        mDelayedSnapToPageRunnable = r;
-        snapToPage(whichPage, SLOW_PAGE_SNAP_ANIMATION_DURATION);
     }
 
     protected void snapToScreenId(long screenId, Runnable r) {
@@ -1187,10 +1225,9 @@ public class Workspace extends SmoothPagedView
             }
 
             // Exclude the leftmost page
-            int emptyExtraPages = numEmptyScreensToIgnore();
-            int firstIndex = numCustomPages();
-            // Exclude the last extra empty screen (if we have > MIN_PARALLAX_PAGE_SPAN pages)
-            int lastIndex = getChildCount() - 1 - emptyExtraPages;
+            int firstIndex = numCustomPages() + (hasExtraEmptyScreenLeft() ? 1 : 0);
+            // Exclude the last extra empty screen
+            int lastIndex = getChildCount() - 1 - (hasExtraEmptyScreenRight() ? 1 : 0);
             if (isLayoutRtl()) {
                 int temp = firstIndex;
                 firstIndex = lastIndex;
@@ -1222,17 +1259,8 @@ public class Workspace extends SmoothPagedView
             }
         }
 
-        private int numEmptyScreensToIgnore() {
-            int numScrollingPages = getChildCount() - numCustomPages();
-            if (numScrollingPages >= MIN_PARALLAX_PAGE_SPAN && hasExtraEmptyScreen()) {
-                return 1;
-            } else {
-                return 0;
-            }
-        }
-
         private int getNumScreensExcludingEmptyAndCustom() {
-            int numScrollingPages = getChildCount() - numEmptyScreensToIgnore() - numCustomPages();
+            int numScrollingPages = getChildCount() - numExtraEmptyScreens() - numCustomPages();
             return numScrollingPages;
         }
 
@@ -1288,11 +1316,15 @@ public class Workspace extends SmoothPagedView
     @Override
     public void computeScroll() {
         super.computeScroll();
-        mWallpaperOffset.syncWithScroll();
+        if (mScrollWallpaper) mWallpaperOffset.syncWithScroll();
+
+        if (isInOverviewMode() && !isReordering(true)) {
+            updateDefaultScreenButton();
+        }
     }
 
     void showOutlines() {
-        if (!isSmall() && !mIsSwitchingState) {
+        if (!mIsSwitchingState) {
             if (mChildrenOutlineFadeOutAnimation != null) mChildrenOutlineFadeOutAnimation.cancel();
             if (mChildrenOutlineFadeInAnimation != null) mChildrenOutlineFadeInAnimation.cancel();
             mChildrenOutlineFadeInAnimation = LauncherAnimUtils.ofFloat(this, "childrenOutlineAlpha", 1.0f);
@@ -1302,7 +1334,7 @@ public class Workspace extends SmoothPagedView
     }
 
     void hideOutlines() {
-        if (!isSmall() && !mIsSwitchingState) {
+        if (!mIsSwitchingState) {
             if (mChildrenOutlineFadeInAnimation != null) mChildrenOutlineFadeInAnimation.cancel();
             if (mChildrenOutlineFadeOutAnimation != null) mChildrenOutlineFadeOutAnimation.cancel();
             mChildrenOutlineFadeOutAnimation = LauncherAnimUtils.ofFloat(this, "childrenOutlineAlpha", 0.0f);
@@ -1401,7 +1433,7 @@ public class Workspace extends SmoothPagedView
                     float scrollProgress = getScrollProgress(screenCenter, child, i);
                     float alpha = 1 - Math.abs(scrollProgress);
                     child.getShortcutsAndWidgets().setAlpha(alpha);
-                    if (!mIsDragOccuring) {
+                    if (!mIsDragOccuring && !mShowOutlines) {
                         child.setBackgroundAlphaMultiplier(
                                 backgroundAlphaInterpolator(Math.abs(scrollProgress)));
                     } else {
@@ -1452,6 +1484,12 @@ public class Workspace extends SmoothPagedView
         }
 
         if (Float.compare(progress, mLastCustomContentScrollProgress) == 0) return;
+
+        CellLayout cc = mWorkspaceScreens.get(CUSTOM_CONTENT_SCREEN_ID);
+        if (progress > 0 && cc.getVisibility() != VISIBLE && !isSmall()) {
+            cc.setVisibility(VISIBLE);
+        }
+
         mLastCustomContentScrollProgress = progress;
 
         setBackgroundAlpha(progress * 0.8f);
@@ -1485,12 +1523,31 @@ public class Workspace extends SmoothPagedView
         return listener;
     }
 
+    public void setShowOutlines(boolean show) {
+        mShowOutlines = show;
+    }
+
+    @Override
+    public void setFadeInAdjacentScreens(boolean fade) {
+        mWorkspaceFadeInAdjacentScreens = fade;
+    }
+
     @Override
     protected void screenScrolled(int screenCenter) {
         final boolean isRtl = isLayoutRtl();
-        super.screenScrolled(screenCenter);
+
+        boolean isOnLastPageBeforeCustomContent = false;
+        if (hasCustomContent()) {
+            int customContentWidth = mWorkspaceScreens.get(CUSTOM_CONTENT_SCREEN_ID).getMeasuredWidth();
+            isOnLastPageBeforeCustomContent = (mOverScrollX < customContentWidth && !isLayoutRtl()) ||
+                    ((mOverScrollX > mMaxScrollX - customContentWidth) && isLayoutRtl());
+        }
+        mUseTransitionEffect = !isOnLastPageBeforeCustomContent && mState == State.NORMAL && !mIsSwitchingState;
 
         updatePageAlphaValues(screenCenter);
+
+        super.screenScrolled(screenCenter);
+
         updateStateForCustomContent(screenCenter);
         enableHwLayersOnVisiblePages();
 
@@ -1561,15 +1618,35 @@ public class Workspace extends SmoothPagedView
         AccessibilityManager am = (AccessibilityManager)
                 getContext().getSystemService(Context.ACCESSIBILITY_SERVICE);
         sAccessibilityEnabled = am.isEnabled();
+
+        mScrollWallpaper = SettingsProvider.getBoolean(mLauncher,
+                SettingsProvider.SETTINGS_UI_HOMESCREEN_SCROLLING_WALLPAPER_SCROLL,
+                R.bool.preferences_interface_homescreen_scrolling_wallpaper_scroll_default);
+
+        if (!mScrollWallpaper) {
+            if (mWindowToken != null) mWallpaperManager.setWallpaperOffsets(mWindowToken, 0f, 0.5f);
+        } else {
+            mWallpaperOffset.syncWithScroll();
+        }
     }
 
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
-        if (mFirstLayout && mCurrentPage >= 0 && mCurrentPage < getChildCount()) {
+        if (mFirstLayout && mCurrentPage >= 0 && mCurrentPage < getChildCount() && mScrollWallpaper) {
             mWallpaperOffset.syncWithScroll();
             mWallpaperOffset.jumpToFinal();
         }
         super.onLayout(changed, left, top, right, bottom);
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+
+        // Center wallpaper if scrolling disabled
+        if (!mScrollWallpaper && mWindowToken != null) {
+            mWallpaperManager.setWallpaperOffsets(mWindowToken, 0f, 0.5f);
+        }
     }
 
     @Override
@@ -1734,38 +1811,6 @@ public class Workspace extends SmoothPagedView
     }
 
     /*
-     * This interpolator emulates the rate at which the perceived scale of an object changes
-     * as its distance from a camera increases. When this interpolator is applied to a scale
-     * animation on a view, it evokes the sense that the object is shrinking due to moving away
-     * from the camera.
-     */
-    static class ZInterpolator implements TimeInterpolator {
-        private float focalLength;
-
-        public ZInterpolator(float foc) {
-            focalLength = foc;
-        }
-
-        public float getInterpolation(float input) {
-            return (1.0f - focalLength / (focalLength + input)) /
-                (1.0f - focalLength / (focalLength + 1.0f));
-        }
-    }
-
-    /*
-     * The exact reverse of ZInterpolator.
-     */
-    static class InverseZInterpolator implements TimeInterpolator {
-        private ZInterpolator zInterpolator;
-        public InverseZInterpolator(float foc) {
-            zInterpolator = new ZInterpolator(foc);
-        }
-        public float getInterpolation(float input) {
-            return 1 - zInterpolator.getInterpolation(1 - input);
-        }
-    }
-
-    /*
      * ZInterpolator compounded with an ease-out.
      */
     static class ZoomOutInterpolator implements TimeInterpolator {
@@ -1827,13 +1872,36 @@ public class Workspace extends SmoothPagedView
         if (mLastChildCount == childCount) return;
 
         mOldBackgroundAlphas = new float[childCount];
+        mOldBackgroundAlphaMultipliers = new float[childCount];
         mOldAlphas = new float[childCount];
         mNewBackgroundAlphas = new float[childCount];
+        mNewBackgroundAlphaMultipliers = new float[childCount];
         mNewAlphas = new float[childCount];
     }
 
     Animator getChangeStateAnimation(final State state, boolean animated) {
         return getChangeStateAnimation(state, animated, 0, -1);
+    }
+
+    private void updateDefaultScreenButton() {
+        View overviewPanel = mLauncher.getOverviewPanel();
+        if (overviewPanel != null) {
+            View defaultPageButton = overviewPanel.findViewById(R.id.default_screen_button);
+            defaultPageButton.setActivated(
+                    getScreenIdForPageIndex(getPageNearestToCenterOfScreen()) == mDefaultScreenId);
+        }
+    }
+
+    public void onClickDefaultScreenButton() {
+        if (!isInOverviewMode()) return;
+
+        mDefaultScreenId = getScreenIdForPageIndex(getPageNearestToCenterOfScreen());
+
+        exitOverviewMode(getPageNearestToCenterOfScreen(), true);
+
+        SettingsProvider.get(mLauncher).edit()
+                .putLong(SettingsProvider.SETTINGS_UI_HOMESCREEN_DEFAULT_SCREEN_ID, mDefaultScreenId)
+                .commit();
     }
 
     @Override
@@ -1850,6 +1918,10 @@ public class Workspace extends SmoothPagedView
         showOutlines();
         // Reordering handles its own animations, disable the automatic ones.
         disableLayoutTransitions();
+
+        mLauncher.getOverviewPanel().animate()
+                .alpha(0f)
+                .start();
     }
 
     protected void onEndReordering() {
@@ -1867,6 +1939,13 @@ public class Workspace extends SmoothPagedView
 
         // Re-enable auto layout transitions for page deletion.
         enableLayoutTransitions();
+
+        // Show the default screen button
+        updateDefaultScreenButton();
+
+        mLauncher.getOverviewPanel().animate()
+                .alpha(1f)
+                .start();
     }
 
     public boolean isInOverviewMode() {
@@ -1894,6 +1973,8 @@ public class Workspace extends SmoothPagedView
         if (!enable) {
             finalState = Workspace.State.NORMAL;
         }
+
+        mLauncher.updateOverviewPanel();
 
         Animator workspaceAnim = getChangeStateAnimation(finalState, animated, 0, snapPage);
         if (workspaceAnim != null) {
@@ -1926,7 +2007,7 @@ public class Workspace extends SmoothPagedView
         if (mState != State.NORMAL) {
             return false;
         }
-        return true;
+        return mShowSearchBar;
     }
 
     public void updateInteractionForState() {
@@ -1971,6 +2052,7 @@ public class Workspace extends SmoothPagedView
         final boolean stateIsSmall = (state == State.SMALL);
         final boolean stateIsOverview = (state == State.OVERVIEW);
         float finalBackgroundAlpha = (stateIsSpringLoaded || stateIsOverview) ? 1.0f : 0f;
+        float finalBackgroundAlphaMultiplier = (stateIsSpringLoaded || stateIsOverview || mShowOutlines) ? 1.0f : 0f;
         float finalHotseatAndPageIndicatorAlpha = (stateIsOverview || stateIsSmall) ? 0f : 1f;
         float finalOverviewPanelAlpha = stateIsOverview ? 1f : 0f;
         float finalSearchBarAlpha = !stateIsNormal ? 0f : 1f;
@@ -2017,6 +2099,20 @@ public class Workspace extends SmoothPagedView
             float initialAlpha = cl.getShortcutsAndWidgets().getAlpha();
             float finalAlpha = stateIsSmall ? 0f : 1f;
 
+            if (stateIsOverview) {
+                cl.setVisibility(VISIBLE);
+                cl.setTranslationX(0f);
+                cl.setTranslationY(0f);
+                cl.setPivotX(cl.getMeasuredWidth() * 0.5f);
+                cl.setPivotY(cl.getMeasuredHeight() * 0.5f);
+                cl.setRotation(0f);
+                cl.setRotationY(0f);
+                cl.setRotationX(0f);
+                cl.setScaleX(1f);
+                cl.setScaleY(1f);
+                cl.setShortcutAndWidgetAlpha(1f);
+            }
+
             // If we are animating to/from the small state, then hide the side pages and fade the
             // current page in
             if (!mIsSwitchingState) {
@@ -2034,9 +2130,12 @@ public class Workspace extends SmoothPagedView
             mNewAlphas[i] = finalAlpha;
             if (animated) {
                 mOldBackgroundAlphas[i] = cl.getBackgroundAlpha();
+                mOldBackgroundAlphaMultipliers[i] = cl.getBackgroundAlphaMultiplier();
                 mNewBackgroundAlphas[i] = finalBackgroundAlpha;
+                mNewBackgroundAlphaMultipliers[i] = finalBackgroundAlphaMultiplier;
             } else {
                 cl.setBackgroundAlpha(finalBackgroundAlpha);
+                cl.setBackgroundAlphaMultiplier(finalBackgroundAlphaMultiplier);
                 cl.setShortcutAndWidgetAlpha(finalAlpha);
             }
         }
@@ -2077,6 +2176,9 @@ public class Workspace extends SmoothPagedView
                                     cl.setBackgroundAlpha(
                                             a * mOldBackgroundAlphas[i] +
                                             b * mNewBackgroundAlphas[i]);
+                                    cl.setBackgroundAlphaMultiplier(
+                                            a * mOldBackgroundAlphaMultipliers[i] +
+                                            b * mNewBackgroundAlphaMultipliers[i]);
                                 }
                             });
                         anim.play(bgAnim);
@@ -2090,14 +2192,17 @@ public class Workspace extends SmoothPagedView
             }
             ObjectAnimator hotseatAlpha = ObjectAnimator.ofFloat(hotseat, "alpha",
                     finalHotseatAndPageIndicatorAlpha);
-            ObjectAnimator searchBarAlpha = ObjectAnimator.ofFloat(searchBar,
-                    "alpha", finalSearchBarAlpha);
+            ObjectAnimator searchBarAlpha = null;
+            if (mShowSearchBar) {
+                searchBarAlpha = ObjectAnimator.ofFloat(searchBar,
+                        "alpha", finalSearchBarAlpha);
+            }
             ObjectAnimator overviewPanelAlpha = ObjectAnimator.ofFloat(overviewPanel,
                     "alpha", finalOverviewPanelAlpha);
 
             overviewPanelAlpha.addListener(new AlphaUpdateListener(overviewPanel));
             hotseatAlpha.addListener(new AlphaUpdateListener(hotseat));
-            searchBarAlpha.addListener(new AlphaUpdateListener(searchBar));
+            if (mShowSearchBar) searchBarAlpha.addListener(new AlphaUpdateListener(searchBar));
 
             if (workspaceToOverview) {
                 hotseatAlpha.setInterpolator(new DecelerateInterpolator(2));
@@ -2111,7 +2216,7 @@ public class Workspace extends SmoothPagedView
 
             anim.play(overviewPanelAlpha);
             anim.play(hotseatAlpha);
-            anim.play(searchBarAlpha);
+            if (mShowSearchBar) anim.play(searchBarAlpha);
             anim.play(pageIndicatorAlpha);
             anim.setStartDelay(delay);
         } else {
@@ -2123,8 +2228,10 @@ public class Workspace extends SmoothPagedView
                 getPageIndicator().setAlpha(finalHotseatAndPageIndicatorAlpha);
                 AlphaUpdateListener.updateVisibility(getPageIndicator());
             }
-            searchBar.setAlpha(finalSearchBarAlpha);
-            AlphaUpdateListener.updateVisibility(searchBar);
+            if (mShowSearchBar) {
+                searchBar.setAlpha(finalSearchBarAlpha);
+                AlphaUpdateListener.updateVisibility(searchBar);
+            }
             updateCustomContentVisibility();
             setScaleX(mNewScale);
             setScaleY(mNewScale);
@@ -2530,16 +2637,7 @@ public class Workspace extends SmoothPagedView
 
             // Don't accept the drop if there's no room for the item
             if (!foundCell) {
-                // Don't show the message if we are dropping on the AllApps button and the hotseat
-                // is full
                 boolean isHotseat = mLauncher.isHotseatLayout(dropTargetLayout);
-                if (mTargetCell != null && isHotseat) {
-                    Hotseat hotseat = mLauncher.getHotseat();
-                    if (hotseat.isAllAppsButtonRank(
-                            hotseat.getOrderInHotseat(mTargetCell[0], mTargetCell[1]))) {
-                        return false;
-                    }
-                }
 
                 mLauncher.showOutOfSpaceMessage(isHotseat);
                 return false;
@@ -2547,8 +2645,8 @@ public class Workspace extends SmoothPagedView
         }
 
         long screenId = getIdForScreen(dropTargetLayout);
-        if (screenId == EXTRA_EMPTY_SCREEN_ID) {
-            commitExtraEmptyScreen();
+        if (screenId == EXTRA_EMPTY_SCREEN_LEFT_ID || screenId == EXTRA_EMPTY_SCREEN_RIGHT_ID) {
+            commitExtraEmptyScreen(screenId);
         }
 
         return true;
@@ -2575,7 +2673,9 @@ public class Workspace extends SmoothPagedView
             return false;
         }
 
-        boolean aboveShortcut = (dropOverView.getTag() instanceof ShortcutInfo);
+        ItemInfo dropOverViewInfo = (ItemInfo) dropOverView.getTag();
+        boolean aboveShortcut = (dropOverViewInfo.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION ||
+                dropOverViewInfo.itemType == LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT);
         boolean willBecomeShortcut =
                 (info.itemType == LauncherSettings.Favorites.ITEM_TYPE_APPLICATION ||
                 info.itemType == LauncherSettings.Favorites.ITEM_TYPE_SHORTCUT);
@@ -2798,8 +2898,7 @@ public class Workspace extends SmoothPagedView
 
                         final LauncherAppWidgetHostView hostView = (LauncherAppWidgetHostView) cell;
                         AppWidgetProviderInfo pinfo = hostView.getAppWidgetInfo();
-                        if (pinfo != null &&
-                                pinfo.resizeMode != AppWidgetProviderInfo.RESIZE_NONE) {
+                        if (pinfo != null) {
                             final Runnable addResizeFrame = new Runnable() {
                                 public void run() {
                                     DragLayer dragLayer = mLauncher.getDragLayer();
@@ -3052,7 +3151,9 @@ public class Workspace extends SmoothPagedView
     private void cleanupFolderCreation() {
         if (mDragFolderRingAnimator != null) {
             mDragFolderRingAnimator.animateToNaturalState();
+            mDragFolderRingAnimator = null;
         }
+        mFolderCreationAlarm.setOnAlarmListener(null);
         mFolderCreationAlarm.cancelAlarm();
     }
 
@@ -3396,9 +3497,11 @@ public class Workspace extends SmoothPagedView
         }
 
         public void onAlarm(Alarm alarm) {
-            if (mDragFolderRingAnimator == null) {
-                mDragFolderRingAnimator = new FolderRingAnimator(mLauncher, null);
+            if (mDragFolderRingAnimator != null) {
+                // This shouldn't happen ever, but just in case, make sure we clean up the mess.
+                mDragFolderRingAnimator.animateToNaturalState();
             }
+            mDragFolderRingAnimator = new FolderRingAnimator(mLauncher, null);
             mDragFolderRingAnimator.setCell(cellX, cellY);
             mDragFolderRingAnimator.setCellLayout(layout);
             mDragFolderRingAnimator.animateToAcceptState();
@@ -3802,7 +3905,7 @@ public class Workspace extends SmoothPagedView
     }
 
     public int getRestorePage() {
-        return getNextPage() - numCustomPages();
+        return getNextPage() - numCustomPages() - (hasExtraEmptyScreenLeft() ? 1 : 0);
     }
 
     /**
@@ -3857,7 +3960,7 @@ public class Workspace extends SmoothPagedView
                 // be done post drop animation.
                 stripEmptyScreens();
             }
-        } else if (mDragInfo != null) {
+        } else if (mDragInfo != null && (!(target instanceof InfoDropTarget))) {
             CellLayout cellLayout;
             if (mLauncher.isHotseatLayout(target)) {
                 cellLayout = mLauncher.getHotseat().getLayout();
@@ -3866,7 +3969,7 @@ public class Workspace extends SmoothPagedView
             }
             cellLayout.onDropChild(mDragInfo.cell);
         }
-        if ((d.cancelled || (beingCalledAfterUninstall && !mUninstallSuccessful))
+        if ((d.cancelled || target instanceof InfoDropTarget || (beingCalledAfterUninstall && !mUninstallSuccessful))
                 && mDragInfo.cell != null) {
             mDragInfo.cell.setVisibility(VISIBLE);
         }
@@ -3935,7 +4038,7 @@ public class Workspace extends SmoothPagedView
             View v = children.get(i);
             ItemInfo info = (ItemInfo) v.getTag();
             // Null check required as the AllApps button doesn't have an item info
-            if (info instanceof ShortcutInfo) {
+            if (info instanceof ShortcutInfo && info.itemType != LauncherSettings.Favorites.ITEM_TYPE_ALLAPPS) {
                 ShortcutInfo si = (ShortcutInfo) info;
                 ComponentName cn = si.intent.getComponent();
 
@@ -4085,6 +4188,7 @@ public class Workspace extends SmoothPagedView
             }
         }
         mRestoredPages.clear();
+        mSavedStates = null;
     }
 
     @Override
@@ -4424,7 +4528,7 @@ public class Workspace extends SmoothPagedView
     }
 
     void moveToDefaultScreen(boolean animate) {
-        moveToScreen(mDefaultPage, animate);
+        moveToScreen(getPageIndexForScreenId(mDefaultScreenId), animate);
     }
 
     void moveToCustomContentScreen(boolean animate) {
@@ -4445,7 +4549,7 @@ public class Workspace extends SmoothPagedView
     @Override
     protected PageIndicator.PageMarkerResources getPageIndicatorMarker(int pageIndex) {
         long screenId = getScreenIdForPageIndex(pageIndex);
-        if (screenId == EXTRA_EMPTY_SCREEN_ID) {
+        if (screenId == EXTRA_EMPTY_SCREEN_LEFT_ID || screenId == EXTRA_EMPTY_SCREEN_RIGHT_ID) {
             int count = mScreenOrder.size() - numCustomPages();
             if (count > 1) {
                 return new PageIndicator.PageMarkerResources(R.drawable.ic_pageindicator_current,

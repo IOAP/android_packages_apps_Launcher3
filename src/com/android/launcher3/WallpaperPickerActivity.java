@@ -16,6 +16,7 @@
 
 package com.android.launcher3;
 
+import android.animation.Animator;
 import android.animation.LayoutTransition;
 import android.app.ActionBar;
 import android.app.Activity;
@@ -54,6 +55,7 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.ViewTreeObserver.OnGlobalLayoutListener;
 import android.view.accessibility.AccessibilityEvent;
+import android.view.animation.AccelerateInterpolator;
 import android.view.animation.DecelerateInterpolator;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
@@ -64,6 +66,7 @@ import android.widget.ListAdapter;
 
 import com.android.gallery3d.exif.ExifInterface;
 import com.android.photos.BitmapRegionTileSource;
+import com.android.launcher3.settings.SettingsProvider;
 
 import java.io.BufferedInputStream;
 import java.io.File;
@@ -79,6 +82,9 @@ public class WallpaperPickerActivity extends WallpaperCropActivity {
     public static final int PICK_WALLPAPER_THIRD_PARTY_ACTIVITY = 6;
     public static final int PICK_LIVE_WALLPAPER = 7;
     private static final String TEMP_WALLPAPER_TILES = "TEMP_WALLPAPER_TILES";
+
+    private static final int MENU_WALLPAPER_SCROLL = 0;
+
 
     private View mSelectedThumb;
     private boolean mIgnoreNextTap;
@@ -215,12 +221,21 @@ public class WallpaperPickerActivity extends WallpaperCropActivity {
                 if (mAnim != null) {
                     mAnim.cancel();
                 }
-                if (mWallpaperStrip.getTranslationY() == 0) {
+                if (mWallpaperStrip.getAlpha() == 1f) {
                     mIgnoreNextTap = true;
                 }
                 mAnim = new LauncherViewPropertyAnimator(mWallpaperStrip);
-                mAnim.translationY(mWallpaperStrip.getHeight()).alpha(0f)
-                        .setInterpolator(new DecelerateInterpolator(0.75f));
+                mAnim.alpha(0f)
+                     .setDuration(150)
+                     .addListener(new Animator.AnimatorListener() {
+                         public void onAnimationStart(Animator animator) { }
+                         public void onAnimationEnd(Animator animator) {
+                             mWallpaperStrip.setVisibility(View.INVISIBLE);
+                         }
+                         public void onAnimationCancel(Animator animator) { }
+                         public void onAnimationRepeat(Animator animator) { }
+                     });
+                mAnim.setInterpolator(new AccelerateInterpolator(0.75f));
                 mAnim.start();
             }
             @Override
@@ -235,9 +250,11 @@ public class WallpaperPickerActivity extends WallpaperCropActivity {
                     if (mAnim != null) {
                         mAnim.cancel();
                     }
+                    mWallpaperStrip.setVisibility(View.VISIBLE);
                     mAnim = new LauncherViewPropertyAnimator(mWallpaperStrip);
-                    mAnim.translationY(0f).alpha(1f)
-                            .setInterpolator(new DecelerateInterpolator(0.75f));
+                    mAnim.alpha(1f)
+                         .setDuration(150)
+                         .setInterpolator(new DecelerateInterpolator(0.75f));
                     mAnim.start();
                 }
             }
@@ -477,21 +494,56 @@ public class WallpaperPickerActivity extends WallpaperCropActivity {
                     MediaStore.Images.ImageColumns.DATE_TAKEN},
                 null, null, MediaStore.Images.ImageColumns.DATE_TAKEN + " DESC LIMIT 1");
         Bitmap thumb = null;
-        if (cursor.moveToNext()) {
-            int id = cursor.getInt(0);
-            thumb = MediaStore.Images.Thumbnails.getThumbnail(getContentResolver(),
-                    id, MediaStore.Images.Thumbnails.MINI_KIND, null);
+        if (cursor != null) {
+            if (cursor.moveToFirst()) {
+                int id = cursor.getInt(0);
+                thumb = MediaStore.Images.Thumbnails.getThumbnail(getContentResolver(),
+                        id, MediaStore.Images.Thumbnails.MINI_KIND, null);
+            }
+            cursor.close();
         }
-        cursor.close();
         return thumb;
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        menu.add(0, MENU_WALLPAPER_SCROLL, 0,
+                R.string.wallpaper_scroll).setCheckable(true);
+
+        return super.onCreateOptionsMenu(menu);
+    }
+
+    @Override
+    public boolean onPrepareOptionsMenu(Menu menu) {
+        MenuItem wallpaperScroll = menu.findItem(MENU_WALLPAPER_SCROLL);
+
+        wallpaperScroll.setChecked(SettingsProvider.getBoolean(this,
+                SettingsProvider.SETTINGS_UI_HOMESCREEN_SCROLLING_WALLPAPER_SCROLL,
+                R.bool.preferences_interface_homescreen_scrolling_wallpaper_scroll_default));
+
+        return super.onPrepareOptionsMenu(menu);
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        // Handle presses on the action bar items
+        switch (item.getItemId()) {
+            case MENU_WALLPAPER_SCROLL:
+                SettingsProvider.get(this).edit()
+                        .putBoolean(SettingsProvider.SETTINGS_UI_HOMESCREEN_SCROLLING_WALLPAPER_SCROLL, !item.isChecked())
+                        .commit();
+                return true;
+            default:
+                return super.onOptionsItemSelected(item);
+        }
     }
 
     protected void onStop() {
         super.onStop();
         mWallpaperStrip = findViewById(R.id.wallpaper_strip);
-        if (mWallpaperStrip.getTranslationY() > 0f) {
-            mWallpaperStrip.setTranslationY(0f);
+        if (mWallpaperStrip.getAlpha() < 1f) {
             mWallpaperStrip.setAlpha(1f);
+            mWallpaperStrip.setVisibility(View.VISIBLE);
         }
     }
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-     Copyright (C) 2013 The CyanogenMod Project
+     Copyright (C) 2014 The CyanogenMod Project
 
      Licensed under the Apache License, Version 2.0 (the "License");
      you may not use this file except in compliance with the License.
@@ -15,9 +15,9 @@
      limitations under the License.
 -->
 <resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
-    <string name="pref_workspace_title">Munkaterület beállításai</string>
-    <string name="pref_title_workspace_rows">Sorok</string>
-    <string name="pref_title_workspace_cols">Oszlopok</string>
-    <string name="pref_title_default_workspace">Alapértelmezett képernyő</string>
-    <string name="pref_title_show_search_bar">Keresősáv megjelenítése</string>
+  <string-array name="preferences_interface_general_icons_text_font_family_entries">
+    <item>Biasa</item>
+    <item>Nipis</item>
+    <item>Tebal</item>
+  </string-array>
 </resources>

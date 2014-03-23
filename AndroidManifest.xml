@@ -19,7 +19,13 @@
 -->
 <manifest
     xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.android.launcher3">
+    package="com.android.launcher3"
+    android:versionName="@string/application_version"
+    android:versionCode="1000">
+
+    <original-package android:name="com.android.launcher3" />
+
+    <uses-sdk android:minSdkVersion="17" android:targetSdkVersion="19" />
 
     <permission
         android:name="com.android.launcher3.permission.PRELOAD_WORKSPACE"
@@ -58,7 +64,7 @@
 
     <application
         android:name="com.android.launcher3.LauncherApplication"
-        android:label="@string/application_name"
+        android:label="@string/cm_application_name"
         android:icon="@mipmap/ic_launcher_home"
         android:hardwareAccelerated="true"
         android:largeHeap="@bool/config_largeHeap"
@@ -76,6 +82,15 @@
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.MONKEY"/>
+            </intent-filter>
+        </activity>
+
+        <activity android:name="com.android.launcher3.settings.SettingsActivity"
+                android:label="@string/preferences_title">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="com.cyanogenmod.category.LAUNCHER_PREFERENCES" />
             </intent-filter>
         </activity>
 
@@ -117,8 +132,6 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
-
-        <activity android:name="com.android.launcher3.LauncherPreferencesActivity"></activity>
 
         <!-- Debugging tools -->
         <activity

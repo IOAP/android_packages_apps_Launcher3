@@ -19,7 +19,6 @@ package com.android.launcher3;
 import android.appwidget.AppWidgetHostView;
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Paint;
@@ -27,12 +26,12 @@ import android.graphics.Paint.FontMetrics;
 import android.graphics.PointF;
 import android.graphics.Rect;
 import android.util.DisplayMetrics;
-import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup.LayoutParams;
 import android.widget.FrameLayout;
+import com.android.launcher3.settings.SettingsProvider;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -92,11 +91,11 @@ class DeviceProfile {
     int hotseatAllAppsRank;
     int allAppsNumRows;
     int allAppsNumCols;
-    boolean showSearchBar;
+    boolean searchBarVisible;
     int searchBarSpaceWidthPx;
     int searchBarSpaceMaxWidthPx;
     int searchBarSpaceHeightPx;
-    private int searchBarHeightPx;
+    int searchBarHeightPx;
     int pageIndicatorHeightPx;
 
     DeviceProfile(String n, float w, float h, float r, float c,
@@ -179,16 +178,18 @@ class DeviceProfile {
         // Hotseat
         hotseatIconSize = invDistWeightedInterpolate(minWidth, minHeight, points);
         hotseatIconSizePx = DynamicGrid.pxFromDp(hotseatIconSize, dm);
-        hotseatAllAppsRank = (int) (numColumns / 2);
+        hotseatAllAppsRank = (int) Math.ceil(numColumns / 2);
 
         // Calculate other vars based on Configuration
         updateFromConfiguration(resources, wPx, hPx, awPx, ahPx);
 
         // Search Bar
+        searchBarVisible = SettingsProvider.getBoolean(context, SettingsProvider.SETTINGS_UI_HOMESCREEN_SEARCH,
+                R.bool.preferences_interface_homescreen_search_default);
         searchBarSpaceMaxWidthPx = resources.getDimensionPixelSize(R.dimen.dynamic_grid_search_bar_max_width);
-        searchBarSpaceWidthPx = Math.min(searchBarSpaceMaxWidthPx, widthPx);
         searchBarHeightPx = resources.getDimensionPixelSize(R.dimen.dynamic_grid_search_bar_height);
 
+        searchBarSpaceHeightPx = searchBarHeightPx + (searchBarVisible ? 2 * edgeMarginPx : 0);
 
         // Calculate the actual text height
         Paint textPaint = new Paint();
@@ -248,25 +249,12 @@ class DeviceProfile {
         }
         allAppsNumCols = (availableWidthPx - padding.left - padding.right - 2 * edgeMarginPx) /
                 (iconSizePx + 2 * edgeMarginPx);
-    }
+        allAppsNumCols = (int) Math.min(numColumns, allAppsNumCols);
 
-    void updateFromPreferences(SharedPreferences prefs) {
-        int prefNumColumns = prefs.getInt(LauncherPreferences.KEY_WORKSPACE_COLS, 0);
-        if(prefNumColumns > 0) {
-            numColumns = prefNumColumns;
-        }
-
-        int prefNumRows = prefs.getInt(LauncherPreferences.KEY_WORKSPACE_ROWS, 0);
-        if(prefNumRows > 0) {
-            numRows = prefNumRows;
-        }
-
-        showSearchBar = prefs.getBoolean(LauncherPreferences.KEY_SHOW_SEARCHBAR, true);
-        if(showSearchBar) {
-            searchBarSpaceHeightPx = searchBarHeightPx + 2 * edgeMarginPx;
-        }
-        else {
-            searchBarSpaceHeightPx = 2 * edgeMarginPx;
+        if (isPhone()) {
+            searchBarSpaceWidthPx = Math.min(searchBarSpaceMaxWidthPx, widthPx);
+        } else {
+            searchBarSpaceWidthPx = wPx - (isLandscape ? 3 : 1) * iconSizePx;
         }
     }
 
@@ -326,7 +314,7 @@ class DeviceProfile {
         if (orientation == CellLayout.LANDSCAPE &&
                 transposeLayoutWithOrientation) {
             // Pad the left and right of the workspace with search/hotseat bar sizes
-            padding.set(searchBarSpaceHeightPx, edgeMarginPx,
+            padding.set(searchBarVisible ? searchBarSpaceHeightPx : edgeMarginPx, edgeMarginPx,
                     hotseatBarHeightPx, edgeMarginPx);
         } else {
             if (isTablet()) {
@@ -340,13 +328,13 @@ class DeviceProfile {
                 int gap = (int) ((width - 2 * edgeMarginPx -
                         (numColumns * cellWidthPx)) / (2 * (numColumns + 1)));
                 padding.set(edgeMarginPx + gap,
-                        searchBarSpaceHeightPx,
+                        searchBarVisible ? searchBarSpaceHeightPx : edgeMarginPx,
                         edgeMarginPx + gap,
                         hotseatBarHeightPx + pageIndicatorHeightPx);
             } else {
                 // Pad the top and bottom of the workspace with search/hotseat bar sizes
                 padding.set(desiredWorkspaceLeftRightMarginPx - defaultWidgetPadding.left,
-                        searchBarSpaceHeightPx,
+                        searchBarVisible ? searchBarSpaceHeightPx : edgeMarginPx,
                         desiredWorkspaceLeftRightMarginPx - defaultWidgetPadding.right,
                         hotseatBarHeightPx + pageIndicatorHeightPx);
             }
@@ -416,31 +404,24 @@ class DeviceProfile {
 
         // Layout the search bar
         View qsbBar = launcher.getQsbBar();
+        qsbBar.setVisibility(searchBarVisible ? View.VISIBLE : View.GONE);
+        LayoutParams vglp = qsbBar.getLayoutParams();
+        vglp.width = LayoutParams.MATCH_PARENT;
+        vglp.height = LayoutParams.MATCH_PARENT;
+        qsbBar.setLayoutParams(vglp);
 
-        if (showSearchBar) {
-            Log.i("DeviceProfile.render()", "Showing searchbar.");
-            LayoutParams vglp = qsbBar.getLayoutParams();
-            vglp.width = LayoutParams.MATCH_PARENT;
-            vglp.height = LayoutParams.MATCH_PARENT;
-            qsbBar.setLayoutParams(vglp);
-
-            // Layout the voice proxy
-            View voiceButtonProxy = launcher.findViewById(R.id.voice_button_proxy);
-            if (voiceButtonProxy != null) {
-                if (hasVerticalBarLayout) {
-                    // TODO: MOVE THIS INTO SEARCH BAR MEASURE
-                } else {
-                    lp = (FrameLayout.LayoutParams) voiceButtonProxy.getLayoutParams();
-                    lp.gravity = Gravity.TOP | Gravity.END;
-                    lp.width = (widthPx - searchBarSpaceWidthPx) / 2 +
-                            2 * iconSizePx;
-                    lp.height = searchBarSpaceHeightPx;
-                }
+        // Layout the voice proxy
+        View voiceButtonProxy = launcher.findViewById(R.id.voice_button_proxy);
+        if (voiceButtonProxy != null) {
+            if (hasVerticalBarLayout) {
+                // TODO: MOVE THIS INTO SEARCH BAR MEASURE
+            } else {
+                lp = (FrameLayout.LayoutParams) voiceButtonProxy.getLayoutParams();
+                lp.gravity = Gravity.TOP | Gravity.END;
+                lp.width = (widthPx - searchBarSpaceWidthPx) / 2 +
+                        2 * iconSizePx;
+                lp.height = searchBarSpaceHeightPx;
             }
-        }
-        else {
-            Log.i("DeviceProfile.render()", "Hiding searchbar.");
-            qsbBar.setVisibility(View.GONE);
         }
 
         // Layout the workspace
@@ -506,6 +487,12 @@ class DeviceProfile {
                 pageIndicator.setLayoutParams(lp);
             }
         }
+
+        // Layout the apps customize
+        View appsCustomize = launcher.findViewById(R.id.apps_customize_pane_content);
+        lp = (FrameLayout.LayoutParams) appsCustomize.getLayoutParams();
+        lp.gravity = Gravity.CENTER;
+        appsCustomize.setLayoutParams(lp);
     }
 }
 
@@ -538,26 +525,28 @@ public class DynamicGrid {
         ArrayList<DeviceProfile> deviceProfiles =
                 new ArrayList<DeviceProfile>();
         boolean hasAA = !AppsCustomizePagedView.DISABLE_ALL_APPS;
+        boolean useLargeIcons = SettingsProvider.getBoolean(context, SettingsProvider.SETTINGS_UI_GENERAL_ICONS_LARGE,
+                R.bool.preferences_interface_general_icons_large_default);
         // Our phone profiles include the bar sizes in each orientation
         deviceProfiles.add(new DeviceProfile("Super Short Stubby",
-                255, 300,  2, 3,  48, 13, (hasAA ? 5 : 4), 48));
+                255, 300,  2, 3,  (useLargeIcons ? 54 : 48), 13, (hasAA ? 5 : 4), (useLargeIcons ? 54 : 48)));
         deviceProfiles.add(new DeviceProfile("Shorter Stubby",
-                255, 400,  3, 3,  48, 13, (hasAA ? 5 : 4), 48));
+                255, 400,  3, 3,  (useLargeIcons ? 54 : 48), 13, (hasAA ? 5 : 4), (useLargeIcons ? 54 : 48)));
         deviceProfiles.add(new DeviceProfile("Short Stubby",
-                275, 420,  3, 4,  48, 13, (hasAA ? 5 : 4), 48));
+                275, 420,  3, 4,  (useLargeIcons ? 54 : 48), 13, (hasAA ? 5 : 4), (useLargeIcons ? 54 : 48)));
         deviceProfiles.add(new DeviceProfile("Stubby",
-                255, 450,  3, 4,  48, 13, (hasAA ? 5 : 4), 48));
+                255, 450,  3, 4,  (useLargeIcons ? 54 : 48), 13, (hasAA ? 5 : 4), (useLargeIcons ? 54 : 48)));
         deviceProfiles.add(new DeviceProfile("Nexus S",
-                296, 491.33f,  4, 4,  48, 13, (hasAA ? 5 : 4), 48));
+                296, 491.33f,  4, 4,  (useLargeIcons ? 56 : 48), 13, (hasAA ? 5 : 4), (useLargeIcons ? 56 : 48)));
         deviceProfiles.add(new DeviceProfile("Nexus 4",
-                359, 518,  4, 4,  60, 13, (hasAA ? 5 : 4), 56));
+                359, 518,  4, 4,  (useLargeIcons ? 60 : 52), 13, (hasAA ? 5 : 4), (useLargeIcons ? 56 : 48)));
         // The tablet profile is odd in that the landscape orientation
         // also includes the nav bar on the side
         deviceProfiles.add(new DeviceProfile("Nexus 7",
-                575, 904,  6, 6,  72, 14.4f,  7, 60));
+                575, 904,  5, 5,  (useLargeIcons ? 72 : 60), 14.4f,  7, (useLargeIcons ? 60 : 52)));
         // Larger tablet profiles always have system bars on the top & bottom
         deviceProfiles.add(new DeviceProfile("Nexus 10",
-                727, 1207,  5, 8,  80, 14.4f,  9, 64));
+                727, 1207,  5, 8,  (useLargeIcons ? 80 : 64), 14.4f,  9, (useLargeIcons ? 64 : 56)));
         /*
         deviceProfiles.add(new DeviceProfile("Nexus 7",
                 600, 960,  5, 5,  72, 14.4f,  5, 60));
@@ -565,7 +554,7 @@ public class DynamicGrid {
                 800, 1280,  5, 5,  80, 14.4f, (hasAA ? 7 : 6), 64));
          */
         deviceProfiles.add(new DeviceProfile("20-inch Tablet",
-                1527, 2527,  7, 7,  100, 20,  7, 72));
+                1527, 2527,  7, 7,  (useLargeIcons ? 100 : 80), 20,  7, (useLargeIcons ? 72 : 64)));
         mMinWidth = dpiFromPx(minWidthPx, dm);
         mMinHeight = dpiFromPx(minHeightPx, dm);
         mProfile = new DeviceProfile(context, deviceProfiles,
